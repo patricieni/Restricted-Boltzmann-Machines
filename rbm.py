@@ -10,6 +10,7 @@ from scipy.signal import argrelextrema
 
 import numpy as np
 from numpy import random as rng
+from sklearn.neural_network import BernoulliRBM
 from sklearn import linear_model
 from sklearn import pipeline
 import theano
@@ -54,64 +55,24 @@ class RBM:
             i += 1
         return v_units
 
+
     # Perform Gibbs Sampling from the joint distribution(the one we learnt)
     # After a few steps we get the reconstructed data from the partial data.
-    # This method uses the binary data to find hidden units
-    # This is the best one at reconstructing!
-    def infer_data(self, steps, partial_data):
-        v_units = np.ones(self.n_visible)
-        p_visible = np.ones(self.n_visible)
-        # Assume you have incomplete data. Find the hidden units for the incomplete data. for each connection..
+    def run_gibbs(self, steps, partial_prob):
+        # Run MC-MC for steps number of times
         for step in range(0, steps):
-            [h_units, h_p] = self.compute_hidden_units(partial_data)
+            [h_units, h_p] = self.compute_hidden_units(partial_prob)
+            if step == 0:
+                p_visible = partial_prob
+            else:
+                p_visible = prob
             for i in range(0, self.n_visible):
-                d = partial_data[i]
-                p_visible[i] = d
-                v_units[i] = d
-                if (d != 1) and (d != 0):
-                    dot_product = np.dot(h_units, self.weights[i, :])
+                if p_visible[i] != 0 and p_visible[i] != 1:
+                    dot_product = np.dot(h_p, self.weights[i, :])
                     p_visible[i] = sigmoid(self.v_bias[i] + dot_product)
-                    v_units[i] = np.array(p_visible[i] >= rng.rand()).astype(int)
-            partial_data = v_units
-        return v_units
-
-    # This method uses probabilities to compute hidden units.
-    def infer_data_1(self, steps, partial_data):
-        v_units = np.ones(self.n_visible)
-        p_visible = np.ones(self.n_visible)
-        # Assume you have incomplete data. Find the hidden units for the incomplete data. for each connection..
-        for step in range(0, steps):
-            [h_units, h_p] = self.compute_hidden_units(partial_data)
-            for i in range(0, self.n_visible):
-                d = partial_data[i]
-                p_visible[i] = d
-                v_units[i] = d
-                if (d != 1) and (d != 0):
-                    dot_product = np.dot(h_units, self.weights[i, :])
-                    p_visible[i] = sigmoid(self.v_bias[i] + dot_product)
-                    a = np.array(p_visible[i] >= rng.rand()).astype(int)
-                    v_units[i] = a
-            partial_data = p_visible
-        return v_units
-
-    # This one does it in reverse. First decides if it's a zero or one, then computes the hidden units via binary values
-    # This one doesn't really do the job
-    def infer_data_2(self, steps, partial_prob):
-        p_visible = np.ones(self.n_visible)
-        for step in range(0, steps):
-            # Sample the unknown variables
-            v_units = np.array(partial_prob >= rng.rand()).astype(int)
-            # Find h based on the samped values
-            [h_units, h_p] = self.compute_hidden_units(v_units)
-            # Calculate new probabilities to sample using the joint distribution
-            for i in range(0, self.n_visible):
-                d = partial_prob[i]
-                p_visible[i] = d
-                if (d != 1) and (d != 0):
-                    dot_product = np.dot(h_units, self.weights[i, :])
-                    p_visible[i] = sigmoid(self.v_bias[i] + dot_product)
-            partial_prob = p_visible
-        v_units = np.array(partial_prob >= rng.rand()).astype(int)
+            v_units = np.array(p_visible >= rng.rand(n_visible)).astype(int)
+            partial_prob = v_units
+            prob = p_visible
         return v_units
 
     def run_contrastive_divergence(self, K, data, epochs):
@@ -147,8 +108,8 @@ class RBM:
 
                 # CD_k
                 self.weights += self.l_rate * ((positive_divergence - negative_divergence) / size)
-                self.h_bias += (initial_h_p - final_h_p)
-                self.v_bias += (data[i] - initial_data)
+                self.h_bias += self.l_rate*(initial_h_p - final_h_p)
+                self.v_bias += self.l_rate*(data[i] - initial_data)
 
                 # MSE for input data and reconstructed data, this is plotted later
                 error[epoch] += np.sum((data[i] - final_v_p) ** 2)
@@ -227,7 +188,7 @@ def error_plot(val, epochs):
 
 # Generates the set of all Bars-As-Stripes matrices and reshapes them into a vector
 def generate_artificial_bas(rng):
-    all_data = np.empty(shape=16)
+    all_data = np.zeros(shape=16)
     size = 4
     big_enough = 0
     while big_enough < 500:
@@ -254,12 +215,11 @@ def generate_artificial_bas(rng):
     y = np.vstack({tuple(row) for row in all_data})
     return y
 
-
 if __name__ == '__main__':
     print("Generating RBM with random weights and zero biases...")
     n_visible = 16
     n_hidden = 16
-    numpy_rng = rng.RandomState(1234)
+    numpy_rng = rng.RandomState(123456)
     weights = numpy_rng.uniform(size=(n_visible, n_hidden),
                                 low=-4 * np.sqrt(6. / (n_visible + n_hidden)),
                                 high=4 * np.sqrt(6. / (n_visible + n_hidden)))
@@ -267,59 +227,84 @@ if __name__ == '__main__':
     data = generate_artificial_bas(numpy_rng)
 
     rbm = RBM(n_visible=n_visible, n_hidden=n_hidden, weights=weights, l_rate=0.1)
-
     # Train the RBM to learn the weights and biases
     print('Training RBM using Contrastive Divergence: ', 1)
-    err = rbm.run_contrastive_divergence(K=1, data=data, epochs=4000)
-    error_plot(err, 4000)
+    err = rbm.run_contrastive_divergence(K=1, data=data, epochs=3000)
+    error_plot(err, 3000)
 
-    # input_data = np.array([[1, 1, 1, 0, 0, 0], [1, 0, 1, 0, 0, 0], [1, 1, 1, 0, 0, 0], [0, 0, 1, 1, 1, 0],
-    #                [0, 0, 1, 1, 0, 0], [0, 0, 1, 1, 1, 0]])
     input_data = np.array([1, 0.5, 0.5, 0.5,
                            0, 0.5, 0.5, 0.5,
                            1, 0.5, 0.5, 0.5,
                            0, 0.5, 0.5, 0.5])
-    input_data_1 = np.array([0, 0.5, 0.5, 0.5,
-                             1, 0.5, 0.5, 0.5,
-                             0, 0.5, 0.5, 0.5,
-                             1, 0.5, 0.5, 0.5])
-    input_data_2 = np.array([1, 0, 0, 1,
-                             0.5, 0.5, 0.5, 0.5,
-                             0.5, 0.5, 0.5, 0.5,
+    input_data_1 = np.array([0.5, 0.5, 0.5, 0.5,
+                             0.5, 1, 1, 0.5,
+                             0.5, 1, 1, 0.5,
                              0.5, 0.5, 0.5, 0.5
+                             ])
+    input_data_2 = np.array([0.5, 0.5, 0, 0.5,
+                             0.5, 0.5, 1, 0.5,
+                             0.5, 0.5, 1, 0.5,
+                             0.5, 0.5, 0, 0.5
                              ])
 
     input_data_test = np.array([1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0])
-    input_data_1_test = np.array([0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1])
-    input_data_2_test = np.array([1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1, 1, 0, 0, 1])
+    input_data_1_test = np.array([1, 1, 1, 1,
+                                  1, 1, 1, 1,
+                                  1, 1, 1, 1,
+                                  1, 1, 1, 1])
+    input_data_2_test = np.array([0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0])
 
-    # Just to see what the hidden units look like after learning
-    # [values, probabilities] = rbm.compute_hidden_units(input_data_2)
-    # print("Hidden unit values for some input after learning weights: ", values)
+    #model_rbm = BernoulliRBM(n_components=16, learning_rate=0.1)
+    #model_rbm = model_rbm.fit(data)
 
+    # Learn the data by providing partial input
+    i = 0
+    c1 = 0
+    c1_1 = 0
+    for i in range(0, 10000):
+        reconstructed_data = rbm.run_gibbs(1, input_data)
+        reconstructed = rbm.daydream(1, input_data)
 
-    # Learn the data by providing partial input - using infer_data_1 algorithm
-    errors = np.zeros(15)
-    for i in range(0, 15):
-        reconstructed_data = rbm.infer_data(i, input_data)
-        errors[i] = np.sum((input_data_test - reconstructed_data) ** 2)
+        if i > 1000:
+            if np.sum((reconstructed_data - input_data_test) ** 2) == 0:
+                c1 += 1
+            if np.sum((reconstructed - input_data_test) ** 2) == 0:
+                c1_1 += 1
+        i += 1
     print("Reconstructed Data: ", reconstructed_data)
-    print("Distance from truth", errors)
+    print("Probability for correct state. Should be close to 1 ", c1/9000, c1_1/9000)
 
-    errors_1 = np.zeros(15)
-    for i in range(0, 15):
-        reconstructed_data = rbm.infer_data(i, input_data_1)
-        errors_1[i] = np.sum((input_data_1_test - reconstructed_data) ** 2)
-    print("Reconstructed Data: ", reconstructed_data)
-    print("Distance from truth", errors_1)
+    j = 0
+    c2 = 0
+    c2_2 = 0
+    for j in range(0, 10000):
+        rec_data = rbm.run_gibbs(1, input_data_1)
+        rec_data1 = rbm.daydream(1, input_data_1)
 
-    # use the last algorithm
-    errors_2 = np.zeros(15)
-    for i in range(0, 15):
-        reconstructed_data = rbm.infer_data(i, input_data_2)
-        errors_2[i] = np.sum((input_data_2_test - reconstructed_data) ** 2)
-    print("Reconstructed Data: ", reconstructed_data)
-    print("Distance from truth", errors_2)
+        if j > 1000:
+            if np.sum((rec_data - input_data_1_test) ** 2) == 0:
+                c2 += 1
+            if np.sum((rec_data1 - input_data_1_test) ** 2) == 0:
+                c2_2 += 1
+        j += 1
+    print("Reconstructed Data: ", rec_data)
+    print("Probability for correct state. Should be  close to 1 ", c2/9000, c2_2/9000)
+
+    m = 0
+    c3 = 0
+    c3_3 = 0
+    for m in range(0, 10000):
+        rec_data2 = rbm.run_gibbs(1, input_data_2)
+        rec_data2_2 = rbm.daydream(1, input_data_2)
+
+        if m > 1000:
+            if np.sum((rec_data2 - input_data_2_test) ** 2) == 0:
+                c3 += 1
+            if np.sum((rec_data2_2 - input_data_2_test) ** 2) == 0:
+                c3_3 += 1
+        m += 1
+    print("Reconstructed Data: ", rec_data2)
+    print("Probability for correct state. Should be  close to 1 ", c3/9000, c3_3 / 9000)
 
     # In order to detect the "image" we would need to train a logistic classifier for example on the hidden units
     # lgReg = linear_model.LogisticRegression(C=100)
