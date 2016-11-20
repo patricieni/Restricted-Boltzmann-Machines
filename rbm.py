@@ -51,6 +51,7 @@ class RBM:
         while i < benchmark:
             [h_units, h_p] = self.compute_hidden_units(d)
             [v_units, v_p] = self.reconstruct_visible_units(h_units)
+            # if I change the values with probabilities things improve
             d = v_units
             i += 1
         return v_units
@@ -59,7 +60,6 @@ class RBM:
     # Perform Gibbs Sampling from the joint distribution(the one we learnt)
     # After a few steps we get the reconstructed data from the partial data.
     def run_gibbs(self, steps, partial_prob):
-        # Run MC-MC for steps number of times
         for step in range(0, steps):
             [h_units, h_p] = self.compute_hidden_units(partial_prob)
             if step == 0:
@@ -101,7 +101,8 @@ class RBM:
                 positive_divergence = rbm_multiplier(data[i], initial_h_p)
 
                 # Compute the last hidden unit to get your probabilities
-                [final_h_unit, final_h_p] = self.compute_hidden_units(initial_data)
+                [final_h_unit, final_h_p] = self.compute_hidden_units(v_p)
+                # initial_data
 
                 # Compute negative divergence using kth reconstructed probabilities and hidden probabilities
                 negative_divergence = rbm_multiplier(final_v_p, final_h_p.T)
@@ -254,10 +255,8 @@ if __name__ == '__main__':
                                   1, 1, 1, 1])
     input_data_2_test = np.array([0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0])
 
-    #model_rbm = BernoulliRBM(n_components=16, learning_rate=0.1)
-    #model_rbm = model_rbm.fit(data)
 
-    # Learn the data by providing partial input
+    # Reconstruct partial input
     i = 0
     c1 = 0
     c1_1 = 0
@@ -271,8 +270,8 @@ if __name__ == '__main__':
             if np.sum((reconstructed - input_data_test) ** 2) == 0:
                 c1_1 += 1
         i += 1
-    print("Reconstructed Data: ", reconstructed_data)
-    print("Probability for correct state. Should be close to 1 ", c1/9000, c1_1/9000)
+    print("Ex 1: Reconstructed Data from last step: ", reconstructed_data)
+    print("Ex 1: Probability for correct state. Should be close to 1 ", c1/9000, c1_1/9000)
 
     j = 0
     c2 = 0
@@ -287,8 +286,8 @@ if __name__ == '__main__':
             if np.sum((rec_data1 - input_data_1_test) ** 2) == 0:
                 c2_2 += 1
         j += 1
-    print("Reconstructed Data: ", rec_data)
-    print("Probability for correct state. Should be  close to 1 ", c2/9000, c2_2/9000)
+    print("Ex 2: Reconstructed Data from last step: ", rec_data)
+    print("Ex 2: Probability to get matrix of ones. There are other possibilities as well. ", c2/9000, c2_2/9000)
 
     m = 0
     c3 = 0
@@ -303,8 +302,8 @@ if __name__ == '__main__':
             if np.sum((rec_data2_2 - input_data_2_test) ** 2) == 0:
                 c3_3 += 1
         m += 1
-    print("Reconstructed Data: ", rec_data2)
-    print("Probability for correct state. Should be  close to 1 ", c3/9000, c3_3 / 9000)
+    print("Ex 3: Reconstructed Data from last step: ", rec_data2)
+    print("Ex 3: Probability for correct state. Should be  close to 1 ", c3/9000, c3_3 / 9000)
 
     # In order to detect the "image" we would need to train a logistic classifier for example on the hidden units
     # lgReg = linear_model.LogisticRegression(C=100)
@@ -313,5 +312,8 @@ if __name__ == '__main__':
     '''print("After daydreaming for 15 cycles...")
     reconstruction = rbm.daydream(3000, input_data)
     print("Reconstructed Data: ", reconstruction)'''
+    # model_rbm = BernoulliRBM(n_components=16, learning_rate=0.1)
+    # model_rbm = model_rbm.fit(data)
+
 
     plt.show()
