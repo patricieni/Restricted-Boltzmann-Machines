@@ -46,7 +46,7 @@ class RBM:
         self.v_bias = np.zeros(n_visible)
 
     # Alternate to see whether you get the desired input through the RBM.
-    def daydream1(self, benchmark, d):
+    def daydream(self, benchmark, d):
         i = 0
         while i < benchmark:
             [h_units, h_p] = self.compute_hidden_units(d)
