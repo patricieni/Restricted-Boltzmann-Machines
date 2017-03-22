@@ -1,28 +1,26 @@
-import csv
-import shutil
-import matplotlib.pyplot as plt
-import matplotlib.image as mpimg
-import matplotlib.patches as mpatches
-from datetime import datetime, timedelta
-from dateutil.parser import parse
-from scipy.signal import savgol_filter
-from scipy.signal import argrelextrema
-
+import time
 import numpy as np
 from numpy import random as rng
-from sklearn.neural_network import BernoulliRBM
-from sklearn import linear_model
-from sklearn import pipeline
-import theano
 
-import pandas as pd
-import os
+import matplotlib.pyplot as plt
+
+from sklearn.base import BaseEstimator, TransformerMixin
+
+from sklearn.externals.six.moves import xrange
+from sklearn.utils import check_array
+from sklearn.utils import check_random_state
+from sklearn.utils import gen_even_slices
+from sklearn.utils.extmath import safe_sparse_dot
+from sklearn.utils.validation import check_is_fitted
+from sklearn import linear_model, datasets, metrics
+from sklearn.model_selection import train_test_split
+from sklearn.pipeline import Pipeline
 
 
-# Implement Restricted Boltzmann Machines using numpy
-# This is level 1, level 2 will be Tensor Flow.
-
-class RBM:
+# Implementation taken from sk-learn to understand better PCD..."Persistent Contrastive Divergence"
+# Took out the free energy and pseudo-likelihood calculation from the fitting algo = PCD
+# Parametrize gibbs method, perform n sampling steps.
+class RBM(BaseEstimator, TransformerMixin):
     '''
 
     Iniatilize the RBM with a number of visible and hidden units and the usual bias terms, considered zero to start off
@@ -32,136 +30,166 @@ class RBM:
             h_bias = hidden bias units
             l_rate = learning rate of Contrastive Divergence algorithm
             weights = weights between the visible and hidden units
+            Attributes: Weights and Biases
     '''
 
-    def __init__(self, n_visible, n_hidden, weights, l_rate=0.1):
+    def __init__(self,  n_hidden=256, learning_rate=0.1, batch_size=10,
+                 n_iter=10, verbose=0, random_state=None):
         self.n_hidden = n_hidden
-        self.n_visible = n_visible
-        self.l_rate = l_rate
+        self.learning_rate = learning_rate
+        self.batch_size = batch_size
+        self.n_iter = n_iter
+        self.verbose = verbose
+        self.random_state = random_state
 
-        # Initialize some random weights to all connections, assume a bipartite graph for now.
-        # Use heuristics from Hinton's Guide for weights and set biases to zero
-        self.weights = weights
-        self.h_bias = np.zeros(n_hidden)
-        self.v_bias = np.zeros(n_visible)
+    def transform(self, X):
+        """
+        Returns the representation of the whole input data
+        :param X: All the data to be transformed shape = (samples, n_hidden)
+        :return: h
+        """
+        check_is_fitted(self, "weights_")
+        check_array(X, accept_sparse='csr', dtype=np.float64)
+        return self._mean_hiddens(X)
 
-    # Alternate to see whether you get the desired input through the RBM.
-    def daydream(self, benchmark, d):
-        i = 0
-        while i < benchmark:
-            [h_units, h_p] = self.compute_hidden_units(d)
-            [v_units, v_p] = self.reconstruct_visible_units(h_units)
-            # if I change the values with probabilities things improve
-            d = v_units
-            i += 1
+    def _mean_hiddens(self, v):
+
+        p = safe_sparse_dot(v, self.weights_.T)
+        p += self.bias_hidden_
+        return sigmoid(p)
+
+    def _sample_hidden_units(self, v):
+        """
+        :param v: A vector containing visible units that are either 0/1
+        :return: The hidden units and their associated probabilities
+        """
+
+        p = self._mean_hiddens(v)
+        h_units = rng.random_sample(size=p.shape) < p
+        return h_units
+
+    def _sample_visible_units(self, h):
+        """
+        :param h: A vector containing hidden units that are either 0/1
+        :return: The hidden units and their associated probabilities
+        """
+        p_visible = np.dot(h, self.weights_)
+        p_visible += self.bias_visible_
+        p = sigmoid(p_visible)
+        v_units = rng.random_sample(size=p.shape) < p
         return v_units
 
 
-    # Perform Gibbs Sampling from the joint distribution(the one we learnt)
-    # After a few steps we get the reconstructed data from the partial data.
-    def run_gibbs(self, steps, partial_prob):
-        for step in range(0, steps):
-            [h_units, h_p] = self.compute_hidden_units(partial_prob)
-            if step == 0:
-                p_visible = partial_prob
-            else:
-                p_visible = prob
-            for i in range(0, self.n_visible):
-                if p_visible[i] != 0 and p_visible[i] != 1:
-                    dot_product = np.dot(h_p, self.weights[i, :])
-                    p_visible[i] = sigmoid(self.v_bias[i] + dot_product)
-            v_units = np.array(p_visible >= rng.rand(n_visible)).astype(int)
-            partial_prob = v_units
-            prob = p_visible
-        return v_units
-
-    def run_contrastive_divergence(self, K, data, epochs):
+    def partial_fit(self, X, y = None):
         """
-        :return: Update the weights using contrastive divergence (and the two biases as well)
+        Fit the RBM to the partial data X.
+        Instantiate the weights and random state if they don't exist at this stage
+        :param X: partial data to train
+        :param y:
+        :return: the RBM
         """
-        size = data.shape[0]
-        error = np.zeros(epochs)
-        # Iterate over all the training data and then perform k step on each data input
-        for epoch in range(0, epochs):
-            # Shuffle data to get unbiased samples on each epoch/iteration
-            np.random.shuffle(data)
-            for i in range(0, size):
-                initial_data = data[i]
-                initial_h_p = np.zeros(self.n_hidden)
-                final_v_p = np.zeros(self.n_visible)
-                for k in range(0, K):
-                    [h_units, h_p] = self.compute_hidden_units(initial_data)
-                    [v_units, v_p] = self.reconstruct_visible_units(h_units)
-                    if k == 0:
-                        initial_h_p = h_p
-                    initial_data = v_units
-                    final_v_p = v_p
+        X = check_array(X, accept_sparse='csr', dtype=np.float64)
+        if not hasattr(self, 'random_state_'):
+            self.random_state_ = check_random_state(self.random_state)
+        if not hasattr(self, 'weights_'):
+            self.weights_ = np.asarray(
+                self.random_state_.normal(
+                    0,
+                    0.01,
+                    (self.n_hidden, X.shape[1])
+                ),
+                order='F')
+        if not hasattr(self, 'bias_hidden_'):
+            self.bias_hidden_ = np.zeros(self.n_hidden, )
+        if not hasattr(self, 'intercept_visible_'):
+            self.bias_visible_ = np.zeros(X.shape[1], )
+        if not hasattr(self, 'h_samples_'):
+            self.h_samples_ = np.zeros((self.batch_size, self.n_hidden))
 
-                # Multiply hidden probabilities with the input data vector
-                positive_divergence = rbm_multiplier(data[i], initial_h_p)
+        self._fit(X)
 
-                # Compute the last hidden unit to get your probabilities
-                [final_h_unit, final_h_p] = self.compute_hidden_units(v_p)
-                # initial_data
-
-                # Compute negative divergence using kth reconstructed probabilities and hidden probabilities
-                negative_divergence = rbm_multiplier(final_v_p, final_h_p.T)
-
-                # CD_k
-                self.weights += self.l_rate * ((positive_divergence - negative_divergence) / size)
-                self.h_bias += self.l_rate*(initial_h_p - final_h_p)
-                self.v_bias += self.l_rate*(data[i] - initial_data)
-
-                # MSE for input data and reconstructed data, this is plotted later
-                error[epoch] += np.sum((data[i] - final_v_p) ** 2)
-            epoch += 1
-        return error
-
-    def compute_hidden_units(self, training_data):
-
+    def _fit(self, v_pos, y=None):
+        """Inner fit for one mini-batch.
+        Adjust the parameters to maximize the likelihood of v using
+        Stochastic Maximum Likelihood (SML).
+        Parameters
+        ----------
+        v_pos : array-like, shape (n_samples, n_features)
+            The data to use for training.
+        rng : RandomState
+            Random number generator to use for sampling.
         """
-        :param self: RBM containing number of hidden and visible units, self.n_visible needs to be the same as size(training_data)
-        :param training_data: A vector containing visible units that are either 0/1
-        :return: An activated/non-activated unit
+        h_prob = self._mean_hiddens(v_pos)
+        v_neg = self._sample_visible_units(self.h_samples_)
+        h_neg = self._mean_hiddens(v_neg)
+
+        lr = float(self.learning_rate) / v_pos.shape[0]
+        positive_div = safe_sparse_dot(v_pos.T, h_prob, dense_output=True).T
+        negative_div = np.dot(h_neg.T, v_neg)
+        update = positive_div - negative_div
+        self.weights_ += lr * update
+
+        self.bias_hidden_ += lr * (h_prob.sum(axis=0) - h_neg.sum(axis=0))
+        self.bias_visible_ += lr * (np.asarray(
+            v_pos.sum(axis=0)).squeeze() -
+                                         v_neg.sum(axis=0))
+
+        h_neg[rng.uniform(size=h_neg.shape) < h_neg] = 1.0  # sample binomial
+        self.h_samples_ = np.floor(h_neg, h_neg)
+
+    def fit(self, X, y=None):
+        """Fit the model to the data X.
+        Parameters
+        ----------
+        X : {array-like, sparse matrix} shape (n_samples, n_features)
+            Training data.
+        Returns
+        -------
+        self : BernoulliRBM
+            The fitted model.
         """
-        # Create the vector that contains hidden units. Compute dot product for training data with the weights.
-        # TODO: refactor loops into matrix multiplication by appending biases to the weight matrix
-        h_units = np.ones(self.n_hidden)
-        p_hidden = np.ones(self.n_hidden)
+        X = check_array(X, accept_sparse='csr', dtype=np.float64)
+        n_samples = X.shape[0]
+        rng = check_random_state(self.random_state)
 
-        for i in range(0, self.n_hidden):
-            dot_product = np.dot(training_data, self.weights[:, i])
-            p_hidden[i] = sigmoid(self.h_bias[i] + dot_product)
+        #self.weights_ = rng.uniform(size=(self.n_hidden, X.shape[1]),
+        #                           low=-4 * np.sqrt(6. / (X.shape[1] + self.n_hidden)),
+        #                          high=4 * np.sqrt(6. / (X.shape[1] + self.n_hidden)))
+        self.weights_ = np.asarray(
+            rng.normal(0, 0.01, (self.n_hidden, X.shape[1])),
+            order='F')
 
-            # Sample to activate unit
-            a = np.array(p_hidden[i] >= rng.rand()).astype(int)
-            h_units[i] = np.multiply(h_units[i], a)
-        return [h_units, p_hidden]
+        self.bias_hidden_ = np.zeros(self.n_hidden, )
+        self.bias_visible_ = np.zeros(X.shape[1], )
+        self.h_samples_ = np.zeros((self.batch_size, self.n_hidden))
 
-    def reconstruct_visible_units(self, hidden_units):
-        """
-        :param self: RBM
-        :param hidden_units: Hidden units used to reconstruct the original ones.
-        :return: a set of activated/non-activated visible units.
-        """
-        v_units = np.ones(self.n_visible)
-        p_visible = np.ones(self.n_visible)
+        n_batches = int(np.ceil(float(n_samples) / self.batch_size))
+        batch_slices = list(gen_even_slices(n_batches * self.batch_size,
+                                            n_batches, n_samples))
+        begin = time.time()
+        for iteration in xrange(1, self.n_iter + 1):
+            for batch_slice in batch_slices:
+                self._fit(X[batch_slice])
+        end = time.time()
 
-        for i in range(0, self.n_visible):
-            dot_product = np.dot(hidden_units, self.weights[i, :])
-            p_visible[i] = sigmoid(self.v_bias[i] + dot_product)
-            a = np.array(p_visible[i] >= rng.rand()).astype(int)
-            v_units[i] = np.multiply(v_units[i], a)
-        return [v_units, p_visible]
+        return self
 
-
-# My own multiplier for counting over all the connections in the network.
-# TODO: once we go into Matrix world we don't need this, it resumes to just simple matrix multiplication
-def rbm_multiplier(np1, np2):
-    val = np.ones((np1.size, np2.size))
-    for i in range(0, np1.size):
-        val[i] = np.multiply(np1[i], np2)
-    return val
+    def gibbs(self, n_steps, v):
+        '''
+        Perform n Gibbs sampling steps
+        After a few iterations we should get the reconstructed data back if the model is trained accordingly.
+        :param n_steps: n steps of Gibbs Sampling
+        :param v: visible input units
+        :return: sampled visible units
+        '''
+        check_is_fitted(self, "weights_")
+        if not hasattr(self, "random_state_"):
+            self.random_state_ = check_random_state(self.random_state)
+        for step in range(0, n_steps):
+            h_ = self._sample_hidden_units(v)
+            v_ = self._sample_visible_units(h_)
+            v = v_
+        return v
 
 
 # Not used at this stage, it's the Hinton way of initializing the biases
@@ -218,104 +246,32 @@ def generate_artificial_bas(rng):
 
 if __name__ == '__main__':
     print("Generating RBM with random weights and zero biases...")
-    n_visible = 16
-    n_hidden = 16
     numpy_rng = rng.RandomState(123456)
-    weights = numpy_rng.uniform(size=(n_visible, n_hidden),
-                                low=-4 * np.sqrt(6. / (n_visible + n_hidden)),
-                                high=4 * np.sqrt(6. / (n_visible + n_hidden)))
+    #data = generate_artificial_bas(numpy_rng)
+    digits = datasets.load_digits()
+    X = np.asarray(digits.data, 'float32')
+    Y = digits.target
+    X = (X - np.min(X, 0)) / (np.max(X, 0) + 0.0001)  # 0-1 scaling
 
-    data = generate_artificial_bas(numpy_rng)
+    # Split the data into training set and test set 0.8/0.2
+    X_train, X_test, Y_train, Y_test = train_test_split(X, Y,
+                                                        test_size=0.2,
+                                                        random_state=0)
+    rbm = RBM(random_state=numpy_rng)
+    logistic = linear_model.LogisticRegression()
 
-    rbm = RBM(n_visible=n_visible, n_hidden=n_hidden, weights=weights, l_rate=0.1)
-    # Train the RBM to learn the weights and biases
-    print('Training RBM using Contrastive Divergence: ', 1)
-    err = rbm.run_contrastive_divergence(K=1, data=data, epochs=3000)
-    error_plot(err, 3000)
+    rbm.learning_rate = 0.06
+    rbm.n_iter = 20
+    rbm.n_hidden = 100
+    logistic.C = 6000
 
-    input_data_test = np.array([1, 1, 1, 1, 0, 0, 0, 0, 1, 1, 1, 1, 0, 0, 0, 0])
-    input_data_1_test = np.array([1, 1, 1, 1,
-                                  1, 1, 1, 1,
-                                  1, 1, 1, 1,
-                                  1, 1, 1, 1])
-    input_data_2_test = np.array([0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0])
-
-
-    # Reconstruct partial input
-    i = 0
-    c1 = 0
-    c1_1 = 0
-    for i in range(0, 10000):
-        input_data = np.array([1, 0.5, 0.5, 0.5,
-                               0, 0.5, 0.5, 0.5,
-                               1, 0.5, 0.5, 0.5,
-                               0, 0.5, 0.5, 0.5])
-
-        reconstructed_data = rbm.run_gibbs(4, input_data)
-        reconstructed = rbm.daydream(4, input_data)
-
-        if i > 1000:
-            if np.sum((reconstructed_data - input_data_test) ** 2) == 0:
-                c1 += 1
-            if np.sum((reconstructed - input_data_test) ** 2) == 0:
-                c1_1 += 1
-        i += 1
-    print("Ex 1: Reconstructed Data from last step: ", reconstructed_data)
-    print("Ex 1: Probability for correct state. Should be close to 1 ", c1/9000, c1_1/9000)
-
-    j = 0
-    c2 = 0
-    c2_2 = 0
-    for j in range(0, 10000):
-        input_data_1 = np.array([0.5, 0.5, 0.5, 0.5,
-                                 0.5, 1, 1, 0.5,
-                                 0.5, 1, 1, 0.5,
-                                 0.5, 0.5, 0.5, 0.5
-                                 ])
-
-        rec_data = rbm.run_gibbs(4, input_data_1)
-        rec_data1 = rbm.daydream(4, input_data_1)
-
-        if j > 1000:
-            if np.sum((rec_data - input_data_1_test) ** 2) == 0:
-                c2 += 1
-            if np.sum((rec_data1 - input_data_1_test) ** 2) == 0:
-                c2_2 += 1
-        j += 1
-    print("Ex 2: Reconstructed Data from last step: ", rec_data)
-    print("Ex 2: Probability to get matrix of ones. There are other possibilities as well. 8 to be more precise. 12 % ", c2/9000, c2_2/9000)
-
-    m = 0
-    c3 = 0
-    c3_3 = 0
-    for m in range(0, 10000):
-        input_data_2 = np.array([0.5, 0.5, 0, 0.5,
-                                 0.5, 0.5, 1, 0.5,
-                                 0.5, 0.5, 1, 0.5,
-                                 0.5, 0.5, 0, 0.5
-                                 ])
-
-        rec_data2 = rbm.run_gibbs(4, input_data_2)
-        rec_data2_2 = rbm.daydream(4, input_data_2)
-
-        if m > 1000:
-            if np.sum((rec_data2 - input_data_2_test) ** 2) == 0:
-                c3 += 1
-            if np.sum((rec_data2_2 - input_data_2_test) ** 2) == 0:
-                c3_3 += 1
-        m += 1
-    print("Ex 3: Reconstructed Data from last step: ", rec_data2)
-    print("Ex 3: Probability for correct state. Should be  close to 1 ", c3/9000, c3_3 / 9000)
-
-    # In order to detect the "image" we would need to train a logistic classifier for example on the hidden units
-    # lgReg = linear_model.LogisticRegression(C=100)
-
-    # See what all of the input gives you after 1 reconstruction. Should get good results?? As good as the error...
-    '''print("After daydreaming for 15 cycles...")
-    reconstruction = rbm.daydream(3000, input_data)
-    print("Reconstructed Data: ", reconstruction)'''
-    # model_rbm = BernoulliRBM(n_components=16, learning_rate=0.1)
-    # model_rbm = model_rbm.fit(data)
+    pipeline = Pipeline(steps=[('rbm', rbm), ('logistic', logistic)])
 
 
-    plt.show()
+    pipeline.fit(X_train, Y_train)
+    print()
+    print("Pipeline:Logistic regression using RBM features:\n%s\n" % (
+        metrics.classification_report(
+            Y_test,
+            pipeline.predict(X_test))))
+
